@@ -19,16 +19,22 @@ import config
 
 
 class Proxy:
-    def __init__(self, socket_address: str) -> None:
+    def __init__(self, socket_address: str, ip: str) -> None:
         self.SOCKET_ADDRESS = socket_address
-        self._IP = socket_address.split(":")[0]
-        self.exit_node: Optional[str] = None
+        self._IP = ip
+        self._exit_node: Optional[str] = None
         self.is_anonymous: Optional[bool] = None
         self.geolocation = "::None::None::None"
         self.timeout = float("inf")
 
-    def set_anonymity(self) -> None:
-        self.is_anonymous = self._IP != self.exit_node
+    @property
+    def exit_node(self) -> Optional[str]:
+        return self._exit_node
+
+    @exit_node.setter
+    def exit_node(self, value: str) -> None:
+        self._exit_node = value
+        self.is_anonymous = self._IP != value
 
     def set_geolocation(self, reader: Reader) -> None:
         geolocation = reader.get(self._IP)
@@ -118,25 +124,22 @@ class ProxyScraperChecker:
         """
         try:
             async with session.get(source.strip(), timeout=15) as r:
-                status = r.status
                 text = await r.text(encoding="utf-8")
         except Exception as e:
             logging.error("%s: %s", source, e)
-        else:
-            if status == 200:
-                for proxy in text.splitlines():
-                    proxy = (
-                        proxy.replace(f"{proto}://", "")
-                        .replace("https://", "")
-                        .strip()
-                    )
-                    try:
-                        IPv4Address(proxy.split(":")[0])
-                    except Exception:
-                        continue
-                    self.proxies[proto].append(Proxy(proxy))
-            else:
-                logging.error("%s status code: %s", source, status)
+            return
+        for proxy in text.splitlines():
+            proxy = (
+                proxy.replace(f"{proto}://", "")
+                .replace("https://", "")
+                .strip()
+            )
+            ip = proxy.split(":")[0]
+            try:
+                IPv4Address(ip)
+            except Exception:
+                continue
+            self.proxies[proto].append(Proxy(proxy, ip))
 
     async def check_proxy(self, proxy: Proxy, proto: str) -> None:
         """Check proxy validity.
@@ -169,12 +172,11 @@ class ProxyScraperChecker:
             self.proxies[proto].remove(proxy)
         else:
             proxy.exit_node = exit_node
-            proxy.set_anonymity()
 
     async def fetch_all_sources(self) -> None:
         """Get proxies from sources."""
         logging.info("Fetching sources")
-        async with ClientSession() as session:
+        async with ClientSession(raise_for_status=True) as session:
             coroutines = (
                 self.fetch_source(session, source, proto)
                 for proto, sources in self.SOURCES.items()
